@@ -148,6 +148,10 @@ pub struct Track {
     pub staves: Option<StavesWrapper>,
     #[serde(rename = "GeneralMidi", default)]
     pub general_midi: Option<GeneralMidi>,
+    #[serde(rename = "MidiConnection", default)]
+    pub midi_connection: Option<GeneralMidi>,
+    #[serde(rename = "Sounds", default)]
+    pub sounds: Option<SoundsWrapper>,
     #[serde(rename = "Transpose", default)]
     pub transpose: Option<Transpose>,
 }
@@ -186,6 +190,18 @@ pub struct GeneralMidi {
     pub primary_channel: Option<i32>,
     #[serde(rename = "SecondaryChannel", default)]
     pub secondary_channel: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SoundsWrapper {
+    #[serde(rename = "Sound", default)]
+    pub sounds: Vec<TrackSound>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrackSound {
+    #[serde(rename = "MIDI", default)]
+    pub midi: Option<GeneralMidi>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -443,7 +443,12 @@ impl SongGpifExportOps for Song {
             let b = track.color & 0xFF;
             xml.push_str(&format!("<Color>{r} {g} {b}</Color>"));
             xml.push_str("<Properties>");
-            let pitches: Vec<String> = track.strings.iter().map(|(_, p)| p.to_string()).collect();
+            let pitches: Vec<String> = track
+                .strings
+                .iter()
+                .rev()
+                .map(|(_, p)| p.to_string())
+                .collect();
             xml.push_str(&format!(
                 "<Property name=\"Tuning\"><Pitches>{}</Pitches></Property>",
                 pitches.join(" ")

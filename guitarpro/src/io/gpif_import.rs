@@ -204,12 +204,42 @@ fn extract_tuning(properties: &[Property]) -> Vec<(i8, i8)> {
                 .collect();
             return pitches
                 .iter()
+                .rev()
                 .enumerate()
                 .map(|(i, &pitch)| ((i + 1) as i8, pitch))
                 .collect();
         }
     }
     Vec::new()
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn imports_staff_tuning_and_modern_midi_metadata() {
+        let xml = r#"<GPIF><Score/><MasterTrack/><Tracks><Track id="0">
+            <Name>Bass</Name><Sounds><Sound><MIDI><Program>33</Program></MIDI></Sound></Sounds>
+            <MidiConnection><Port>2</Port><PrimaryChannel>13</PrimaryChannel></MidiConnection>
+            <Staves><Staff><Properties><Property name="Tuning"><Pitches>16 21 26 31 36</Pitches></Property></Properties></Staff></Staves>
+            </Track><Track id="1"><Name>Drums</Name><GeneralMidi><Program>0</Program><PrimaryChannel>9</PrimaryChannel></GeneralMidi></Track>
+            </Tracks><MasterBars/><Bars/><Voices/><Beats/><Notes/><Rhythms/></GPIF>"#;
+        let gpif: Gpif = quick_xml::de::from_str(xml).unwrap();
+        let mut song = Song::default();
+        song.read_gpif(&gpif);
+        assert_eq!(
+            song.tracks[0].strings,
+            vec![(1, 36), (2, 31), (3, 26), (4, 21), (5, 16)]
+        );
+        assert_eq!(song.tracks[0].port, 2);
+        let channel = &song.channels[song.tracks[0].channel_index];
+        assert_eq!((channel.channel, channel.instrument), (13, 33));
+        assert!(song.tracks[1].percussion_track);
+        assert_eq!(song.channels[song.tracks[1].channel_index].instrument, 0);
+        song.read_gpif(&gpif);
+        assert_eq!(song.channels.len(), 2);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +294,9 @@ impl SongGpifOps for Song {
                     continue;
                 }
                 let Some(value) = &auto.value else { continue };
-                let Some(bar_index) = value.bar_index else { continue };
+                let Some(bar_index) = value.bar_index else {
+                    continue;
+                };
                 self.sync_points.push(SyncPoint {
                     bar_index,
                     bar_occurrence: value.bar_occurrence.unwrap_or(0),
@@ -394,12 +426,14 @@ impl SongGpifOps for Song {
 
         // 5. Tracks
         self.tracks.clear();
+        self.channels.clear();
 
         for (t_idx, g_track) in gpif.tracks.tracks.iter().enumerate() {
             let mut track = SongTrack {
                 name: g_track.name.clone(),
                 short_name: g_track.short_name.clone(),
                 number: (t_idx + 1) as i32,
+                strings: Vec::new(),
                 ..Default::default()
             };
 
@@ -437,7 +471,11 @@ impl SongGpifOps for Song {
             track.fret_count = 24;
 
             // MIDI
-            if let Some(gm) = &g_track.general_midi {
+            if let Some(gm) = g_track
+                .general_midi
+                .as_ref()
+                .or(g_track.midi_connection.as_ref())
+            {
                 if let Some(ch) = gm.primary_channel {
                     track.channel_index = ch as usize;
                     track.percussion_track = ch == 9;
@@ -447,6 +485,21 @@ impl SongGpifOps for Song {
                     track.port = port as u8;
                 }
             }
+            if track.midi_program_gpif.is_none() {
+                track.midi_program_gpif = g_track
+                    .sounds
+                    .as_ref()
+                    .and_then(|sounds| sounds.sounds.first())
+                    .and_then(|sound| sound.midi.as_ref())
+                    .and_then(|midi| midi.program);
+            }
+            let channel_number = track.channel_index as u8;
+            track.channel_index = self.channels.len();
+            self.channels.push(crate::audio::midi::MidiChannel {
+                channel: channel_number,
+                instrument: track.midi_program_gpif.unwrap_or(25),
+                ..Default::default()
+            });
 
             // Transpose
             if let Some(tr) = &g_track.transpose {

@@ -104,7 +104,10 @@ pub fn print_text(song: &Song, path: &str, fmt: &str) {
             // The `.gp` container starts at GP7; the GPIF `GPVersion` declares
             // the true format (e.g. "8.1.3" for GP8 — where SyncPoint + audio
             // live).
-            format!("Guitar Pro {} (GP, GPIF v{}.{}.{})", ver.0, ver.0, ver.1, ver.2)
+            format!(
+                "Guitar Pro {} (GP, GPIF v{}.{}.{})",
+                ver.0, ver.0, ver.1, ver.2
+            )
         }
         "MSCZ" => "MuseScore (MSCZ)".to_owned(),
         _ => format!(
@@ -141,7 +144,12 @@ pub fn print_text(song: &Song, path: &str, fmt: &str) {
 
     // ---- Audio sync (GP7/GP8) ---------------------------------------------
     if let Some(audio) = &song.backing_track_audio {
-        println!("{:<16} {} ({} bytes)", "Audio:", "embedded MP3", audio.len());
+        println!(
+            "{:<16} {} ({} bytes)",
+            "Audio:",
+            "embedded MP3",
+            audio.len()
+        );
     }
     if !song.sync_points.is_empty() {
         let shown = song
@@ -172,7 +180,21 @@ pub fn print_text(song: &Song, path: &str, fmt: &str) {
 
     const W_NAME: usize = 24;
     const W_KIND: usize = 10;
-    const W_TUNING: usize = 22;
+    let tuning_width = song
+        .tracks
+        .iter()
+        .map(|track| {
+            track
+                .strings
+                .iter()
+                .map(|&(_, midi)| midi_to_note(midi))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .len()
+        })
+        .max()
+        .unwrap_or(0)
+        .max(22);
     const W_INSTR: usize = 24;
 
     println!(
@@ -187,7 +209,7 @@ pub fn print_text(song: &Song, path: &str, fmt: &str) {
         "Instrument",
         name = W_NAME,
         kind = W_KIND,
-        tuning = W_TUNING,
+        tuning = tuning_width,
         instr = W_INSTR,
     );
     println!(
@@ -201,7 +223,7 @@ pub fn print_text(song: &Song, path: &str, fmt: &str) {
                 + 2
                 + 8
                 + 2
-                + W_TUNING
+                + tuning_width
                 + 2
                 + 6
                 + 2
@@ -269,14 +291,14 @@ pub fn print_text(song: &Song, path: &str, fmt: &str) {
             truncate(&track.name, W_NAME),
             kind,
             track.measures.len(),
-            truncate(&tuning, W_TUNING),
+            tuning,
             max_voices,
             ch_num + 1,
             truncate(instr, W_INSTR),
             flags.join(","),
             name = W_NAME,
             kind = W_KIND,
-            tuning = W_TUNING,
+            tuning = tuning_width,
             instr = W_INSTR,
         );
     }

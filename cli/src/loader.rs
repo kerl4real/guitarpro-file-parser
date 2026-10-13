@@ -29,36 +29,33 @@ pub fn load_song(path_str: &str) -> anyhow::Result<(Song, String)> {
         anyhow::bail!("File '{}' not found", path_str);
     }
 
+    let mut data = Vec::new();
+    fs::File::open(path)?
+        .take((MAX_MSCZ_FILE_SIZE + 1) as u64)
+        .read_to_end(&mut data)?;
+    load_song_bytes(path, &data)
+}
+
+/// Parse the exact bytes supplied by the caller, without rereading the file.
+pub(crate) fn load_song_bytes(path: &Path, data: &[u8]) -> anyhow::Result<(Song, String)> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_uppercase())
         .unwrap_or_else(|| "UNKNOWN".to_string());
-
-    let size = fs::metadata(path_str)
-        .map(|m| m.len() as usize)
-        .unwrap_or(0);
-
-    // MSCZ archives are handled first so their larger size budget applies.
-    let looks_like_mscz = ext == "MSCZ" || (looks_like_zip(path_str) && is_mscz_archive(path_str)?);
+    let size = data.len();
+    let looks_like_mscz = ext == "MSCZ" || (data.starts_with(ZIP_MAGIC) && is_mscz_archive(data));
     if looks_like_mscz {
-        if size > MAX_MSCZ_FILE_SIZE {
-            anyhow::bail!("MSCZ file is too large (> 32 MB)");
-        }
-        let data = fs::read(path_str)?;
-        let file = read_mscz_bytes(&data)
-            .map_err(|e| anyhow::anyhow!("cannot read MSCZ '{}': {}", path_str, e))?;
+        anyhow::ensure!(
+            size <= MAX_MSCZ_FILE_SIZE,
+            "MSCZ file is too large (> 32 MB)"
+        );
+        let file = read_mscz_bytes(data)
+            .map_err(|e| anyhow::anyhow!("cannot read MSCZ '{}': {}", path.display(), e))?;
         let outcome = mscx_to_loaded_score(&file.mscx);
         return Ok((loaded_score_to_legacy_song(&outcome.score), "MSCZ".into()));
     }
-
-    if size > MAX_LEGACY_FILE_SIZE {
-        anyhow::bail!("File is too large (> 16 MB)");
-    }
-
-    let mut file = fs::File::open(path_str)?;
-    let mut data = Vec::with_capacity(size);
-    file.read_to_end(&mut data)?;
+    anyhow::ensure!(size <= MAX_LEGACY_FILE_SIZE, "File is too large (> 16 MB)");
 
     // Prefer the format encoded in the file itself over the on-disk extension:
     // real-world dumps often carry the wrong extension (e.g. a v5.10 file named
@@ -102,28 +99,13 @@ pub fn load_song(path_str: &str) -> anyhow::Result<(Song, String)> {
     Ok((song, format_label))
 }
 
-/// Peek the first four bytes to check for the ZIP magic. Returns `false` on
-/// short files or read errors (the caller then falls back to extension).
-fn looks_like_zip(path_str: &str) -> bool {
-    let mut buffer = [0u8; 4];
-    match fs::File::open(path_str).and_then(|mut file| file.read_exact(&mut buffer)) {
-        Ok(_) => &buffer == ZIP_MAGIC,
-        Err(_) => false,
-    }
-}
-
-/// Distinguish MSCZ from `.gp` (both are ZIPs) by checking whether the archive
-/// contains the OPC-style `META-INF/container.xml` manifest that MuseScore
-/// writes but Guitar Pro does not. Short-circuits on IO errors: returns `false`
-/// so the caller can proceed with the legacy path detection.
-fn is_mscz_archive(path_str: &str) -> anyhow::Result<bool> {
-    let data = fs::read(path_str)?;
-    let cursor = std::io::Cursor::new(data);
-    let mut zip = match zip::ZipArchive::new(cursor) {
+/// MSCZ and GP share ZIP magic; MuseScore includes this manifest.
+fn is_mscz_archive(data: &[u8]) -> bool {
+    let mut zip = match zip::ZipArchive::new(std::io::Cursor::new(data)) {
         Ok(archive) => archive,
-        Err(_) => return Ok(false),
+        Err(_) => return false,
     };
-    Ok(zip.by_name("META-INF/container.xml").is_ok())
+    zip.by_name("META-INF/container.xml").is_ok()
 }
 
 /// Peek at the header to identify the actual legacy version. Returns the

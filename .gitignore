@@ -38,3 +38,5 @@ result-*
 
 node_modules/
 
+# Files generated for testing
+output

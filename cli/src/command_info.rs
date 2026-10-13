@@ -399,8 +399,13 @@ pub fn print_text(song: &Song, path: &str, fmt: &str) {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct InfoOutput {
-    file: String,
+pub(crate) struct InfoOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    directory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_name: Option<String>,
     format: String,
     version: [u8; 3],
     title: String,
@@ -429,7 +434,8 @@ struct InfoOutput {
     measure_count: usize,
     track_count: usize,
     tracks: Vec<TrackJson>,
-    timeline: Vec<MeasureJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeline: Option<Vec<MeasureJson>>,
 }
 
 #[derive(Serialize)]
@@ -470,7 +476,15 @@ struct MeasureJson {
     navigation: Vec<String>,
 }
 
-fn build_json(song: &Song, path: &str, fmt: &str) -> InfoOutput {
+pub(crate) fn build_json(song: &Song, path: &str, fmt: &str) -> InfoOutput {
+    build_metadata(song, path, fmt, true)
+}
+
+pub(crate) fn build_scan_json(song: &Song, path: &str, fmt: &str) -> InfoOutput {
+    build_metadata(song, path, fmt, false)
+}
+
+fn build_metadata(song: &Song, path: &str, fmt: &str, include_timeline: bool) -> InfoOutput {
     let ver = song.version.number;
 
     let tracks = song
@@ -541,61 +555,77 @@ fn build_json(song: &Song, path: &str, fmt: &str) -> InfoOutput {
     let mut prev_tempo: i32 = 0;
     let mut prev_key = String::new();
 
-    let timeline = song
-        .measure_headers
-        .iter()
-        .map(|mh| {
-            let ts = &mh.time_signature;
-            let is_first = mh.number == 1;
-            let time_changed = ts.numerator != prev_time.0 || ts.denominator.value != prev_time.1;
-            let effective_tempo = if mh.tempo == 0 && is_first {
-                song.tempo as i32
-            } else {
-                mh.tempo
-            };
-            let tempo_changed = effective_tempo != 0 && effective_tempo != prev_tempo;
-            let key_str = mh.key_signature.to_string();
-            let key_changed = key_str != prev_key;
+    let timeline = include_timeline.then(|| {
+        song.measure_headers
+            .iter()
+            .map(|mh| {
+                let ts = &mh.time_signature;
+                let is_first = mh.number == 1;
+                let time_changed =
+                    ts.numerator != prev_time.0 || ts.denominator.value != prev_time.1;
+                let effective_tempo = if mh.tempo == 0 && is_first {
+                    song.tempo as i32
+                } else {
+                    mh.tempo
+                };
+                let tempo_changed = effective_tempo != 0 && effective_tempo != prev_tempo;
+                let key_str = mh.key_signature.to_string();
+                let key_changed = key_str != prev_key;
 
-            if is_first || time_changed {
-                prev_time = (ts.numerator, ts.denominator.value);
-            }
-            if is_first || tempo_changed {
-                prev_tempo = effective_tempo;
-            }
-            if is_first || key_changed {
-                prev_key = key_str.clone();
-            }
+                if is_first || time_changed {
+                    prev_time = (ts.numerator, ts.denominator.value);
+                }
+                if is_first || tempo_changed {
+                    prev_tempo = effective_tempo;
+                }
+                if is_first || key_changed {
+                    prev_key = key_str.clone();
+                }
 
-            let mut nav: Vec<String> = Vec::new();
-            if mh.repeat_open {
-                nav.push("repeat_open".to_owned());
-            }
-            if mh.repeat_close >= 0 {
-                nav.push(format!("repeat_close:{}", mh.repeat_close + 1));
-            }
-            if mh.repeat_alternative != 0 {
-                let endings = decode_volta_mask(mh.repeat_alternative);
-                let labels: Vec<String> = endings.iter().map(|n| n.to_string()).collect();
-                nav.push(format!("volta:{}", labels.join(",")));
-            }
-            if let Some(dir) = &mh.direction {
-                nav.push(direction_label(dir).to_owned());
-            }
+                let mut nav: Vec<String> = Vec::new();
+                if mh.repeat_open {
+                    nav.push("repeat_open".to_owned());
+                }
+                if mh.repeat_close >= 0 {
+                    nav.push(format!("repeat_close:{}", mh.repeat_close + 1));
+                }
+                if mh.repeat_alternative != 0 {
+                    let endings = decode_volta_mask(mh.repeat_alternative);
+                    let labels: Vec<String> = endings.iter().map(|n| n.to_string()).collect();
+                    nav.push(format!("volta:{}", labels.join(",")));
+                }
+                if let Some(dir) = &mh.direction {
+                    nav.push(direction_label(dir).to_owned());
+                }
 
-            MeasureJson {
-                number: mh.number,
-                time_signature: format!("{}/{}", ts.numerator, ts.denominator.value),
-                tempo: prev_tempo,
-                key: prev_key.clone(),
-                marker: mh.marker.as_ref().map(|m| m.title.clone()),
-                navigation: nav,
-            }
-        })
-        .collect();
+                MeasureJson {
+                    number: mh.number,
+                    time_signature: format!("{}/{}", ts.numerator, ts.denominator.value),
+                    tempo: prev_tempo,
+                    key: prev_key.clone(),
+                    marker: mh.marker.as_ref().map(|m| m.title.clone()),
+                    navigation: nav,
+                }
+            })
+            .collect()
+    });
 
     InfoOutput {
-        file: path.to_owned(),
+        file: include_timeline.then(|| path.to_owned()),
+        directory: (!include_timeline).then(|| {
+            std::path::Path::new(path)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(""))
+                .to_string_lossy()
+                .into_owned()
+        }),
+        file_name: (!include_timeline).then(|| {
+            std::path::Path::new(path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        }),
         format: fmt.to_owned(),
         version: [ver.0, ver.1, ver.2],
         title: song.name.clone(),

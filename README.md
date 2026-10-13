@@ -42,6 +42,141 @@ cargo run -p cli -- info -i path/to/song.mscz
 cargo run -p cli -- mscz list -i path/to/song.mscz
 ```
 
+## Batch metadata scanning
+
+Build once with `cargo build --release -p cli`, then call the executable from any project:
+
+```powershell
+.\target\release\score_tool.exe scan -i C:\scores --recursive --jobs 4 --format jsonl > metadata.jsonl
+```
+
+The scan supports `.gp3`, `.gp4`, `.gp5`, `.gp`, `.gpx`, and `.mscz` (case-insensitive).
+Without `--recursive`, it scans only the input directory. Symbolic links are skipped.
+`--jobs` defaults to 4 and accepts 1?64 workers. Results stream to stdout in completion
+order; progress every 100 results and a final summary go to stderr. Queues are bounded.
+Each score is fully parsed using the same loader as `info --json`.
+
+Each line is an independent JSON object with `schema_version: 1`, an absolute `path`,
+and `status`. Successful records contain `metadata` with the same fields as `info --json`, excluding the per-measure timeline and splitting `file` into `directory` and `file_name`;
+failed records contain an `error` string.
+Every record includes `extracted_at` (UTC RFC 3339). Readable, size-supported files also
+include `file_metadata`: `created_at`, `updated_at`, `size_bytes`, `checksum`, and
+`checksum_algorithm` (`sha256`). Filesystem dates use UTC RFC 3339 and are `null` when
+unavailable. `updated_at` is the last content modification time. The checksum is
+lowercase hexadecimal SHA-256 over the complete file bytes, including embedded assets.
+Compare checksums between scans to detect content changes, independent of file dates.
+The parser and checksum use the same byte snapshot; detectable changes during the read
+produce an error requesting a rescan. Creation dates describe the current filesystem
+copy, which may differ from the original file's creation date. Directory access errors also produce error
+records with the directory path. Empty metadata fields may be omitted.
+
+```json
+{"schema_version":1,"path":"C:\\scores\\broken.gp5","status":"error","error":"..."}
+```
+
+Individual parse or discovery failures do not stop the scan and do not cause a nonzero
+exit status. Inspect the records for failures. Invalid arguments, an invalid root, or
+output failures cause a nonzero exit status. An empty directory produces no records.
+Keep output files outside the scanned directory or use an unsupported extension such
+as `.jsonl`. The executable must be built for the operating system running the scan.
+
+### Metadata field reference
+
+The following fields describe the JSON Lines output from `scan`. Field names are
+shown exactly as emitted. Values depend on the source format and the metadata
+present in the score; missing source values may be empty or use parser defaults.
+
+#### Scan record
+
+| Field | Type | Meaning |
+|---|---|---|
+| `schema_version` | integer | Output schema version; currently `1`. |
+| `path` | string | Absolute path to the score, or the directory associated with a discovery error. |
+| `status` | string | `ok` for a successful extraction; `error` for a failed extraction or discovery. |
+| `extracted_at` | string | UTC RFC 3339 timestamp when this record was produced. |
+| `file_metadata` | object | File details listed below; omitted if the file could not be read consistently or exceeded the size limit. May be present even when score parsing fails. |
+| `metadata` | object | Score metadata listed below; present only on success. |
+| `error` | string | Failure description; present only on error. |
+
+#### File metadata (`file_metadata`)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `created_at` | string or null | Filesystem creation date in UTC RFC 3339; `null` when unavailable. This is the creation date of the current filesystem copy. |
+| `updated_at` | string or null | Filesystem last modification date in UTC RFC 3339; `null` when unavailable. |
+| `size_bytes` | integer | Complete file size in bytes. |
+| `checksum` | string | Lowercase hexadecimal SHA-256 checksum of the exact file bytes used for parsing. Includes embedded assets; compare between scans to detect content changes. |
+| `checksum_algorithm` | string | Checksum algorithm; currently `sha256`. |
+
+#### Score metadata (`metadata`)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `directory` | string | Absolute parent directory of the score file. |
+| `file_name` | string | File name including its extension, without the directory. |
+| `format` | string | Loader format label: `GP3`, `GP4`, `GP5`, `GPX`, `GP`, or `MSCZ`. |
+| `version` | array of three integers | Parser's score version tuple `[major, minor, patch]`; interpretation depends on source format. |
+| `title` | string | Score title. |
+| `subtitle` | string | Score subtitle; omitted when empty. |
+| `artist` | string | Artist; omitted when empty. |
+| `album` | string | Album; omitted when empty. |
+| `composer` | string | Music author/composer; omitted when empty. |
+| `words` | string | Words/lyrics author credit; omitted when empty. |
+| `copyright` | string | Copyright notice; omitted when empty. |
+| `transcriber` | string | Transcription/writer credit; omitted when empty. |
+| `instructions` | string | Score instructions; omitted when empty. |
+| `comments` | string | Score comments; omitted when empty. |
+| `notice` | array of strings | Notice lines; omitted when empty. |
+| `initial_tempo` | integer | Initial tempo in beats per minute. |
+| `initial_key` | string | Initial key signature as formatted by the parser. |
+| `measure_count` | integer | Number of global measure headers. |
+| `track_count` | integer | Number of tracks. |
+| `tracks` | array of objects | Track metadata listed below. |
+
+#### Track metadata (`metadata.tracks[]`)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `index` | integer | Track position, starting at `1`. |
+| `name` | string | Track name. |
+| `kind` | string | Track classification: `percussion`, `12-string`, `banjo`, or `stringed`. |
+| `tuning` | array of objects | String tuning entries listed below; omitted for percussion tracks or empty tuning. |
+| `frets` | integer | Instrument fret count. |
+| `measure_count` | integer | Number of measures in this track. |
+| `max_voices` | integer | Maximum number of voices containing beats in any track measure. |
+| `midi_channel` | integer | MIDI channel number, starting at `1`. |
+| `midi_program` | integer | Raw MIDI instrument program value from the parsed channel; conventionally zero-based. |
+| `instrument` | string | Instrument name resolved from the MIDI program, or `Drums / Percussion` for percussion tracks. |
+| `solo` | boolean | Whether the track is marked solo. |
+| `mute` | boolean | Whether the track is marked muted. |
+| `hidden` | boolean | Whether the track is hidden; omitted when false. |
+
+#### String tuning (`metadata.tracks[].tuning[]`)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `number` | integer | String number from the parsed track. |
+| `midi` | integer | Open-string MIDI pitch number. |
+| `note` | string | Note name and octave derived from the MIDI pitch, such as `E2`. |
+
+#### Timeline (`info --json` only)
+
+`scan` omits the timeline. The standalone `info --json` command additionally emits
+`timeline`, an array with one object per global measure header:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `number` | integer | Measure number. |
+| `time_signature` | string | Time signature, such as `4/4`. |
+| `tempo` | integer | Effective tempo in beats per minute, carried forward between tempo changes. |
+| `key` | string | Effective key signature. |
+| `marker` | string | Section marker title; omitted when absent. |
+| `navigation` | array of strings | Repeat/navigation labels, such as `repeat_open`, `repeat_close:2`, or `volta:1,2`; omitted when empty. |
+
+The standalone `info --json` output contains the score fields directly at its root,
+with `file` (the input path) instead of `directory` and `file_name`.
+The scan-only record fields and `file_metadata` are not included in that command.
+
 ## Roadmap
 
 ### Library

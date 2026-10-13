@@ -4,6 +4,7 @@ mod command_extract;
 mod command_fingering;
 mod command_form;
 mod command_info;
+mod command_metadata;
 mod command_mscz;
 mod command_repeats;
 mod command_scan;
@@ -14,6 +15,7 @@ use bpaf::{Parser, construct};
 #[derive(Debug)]
 enum Commands {
     Info(command_info::InfoArgs),
+    Metadata(command_metadata::MetadataArgs),
     Scan(command_scan::ScanArgs),
     Convert(command_convert::ConvertArgs),
     Extract(command_extract::ExtractArgs),
@@ -25,6 +27,7 @@ enum Commands {
 }
 
 fn parse_command() -> Commands {
+    let metadata = command_metadata::metadata_args().map(Commands::Metadata);
     let scan = command_scan::scan_args().map(Commands::Scan);
     let info = command_info::info_args().map(Commands::Info);
     let convert = command_convert::convert_args().map(Commands::Convert);
@@ -36,7 +39,7 @@ fn parse_command() -> Commands {
     let mscz = command_mscz::mscz_args().map(Commands::Mscz);
 
     construct!([
-        scan, info, convert, extract, duplicates, repeats, form, fingering, mscz
+        metadata, scan, info, convert, extract, duplicates, repeats, form, fingering, mscz
     ])
     .to_options()
     .descr("Inspect and process Guitar Pro score files")
@@ -46,6 +49,7 @@ fn parse_command() -> Commands {
 
 fn main() {
     let result = match parse_command() {
+        Commands::Metadata(args) => command_metadata::run(&args),
         Commands::Scan(args) => command_scan::run(&args),
         Commands::Info(args) => command_info::run(&args),
         Commands::Convert(args) => command_convert::run(&args),

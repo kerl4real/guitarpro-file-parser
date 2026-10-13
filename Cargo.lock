@@ -233,6 +233,7 @@ version = "0.0.3"
 dependencies = [
  "anyhow",
  "bpaf",
+ "encoding_rs",
  "guitarpro",
  "quick-xml",
  "serde",

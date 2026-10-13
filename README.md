@@ -42,6 +42,69 @@ cargo run -p cli -- info -i path/to/song.mscz
 cargo run -p cli -- mscz list -i path/to/song.mscz
 ```
 
+## Editing GP metadata
+
+Set title, subtitle, artist, or album in GP3, GP4, GP5, GPX (GP6), or GP (GP7+) files:
+
+```powershell
+score_tool metadata set -i song.gp --title "My Song" --only-if-empty
+```
+
+This edits the file in place without creating a backup by default. Add `--backup`
+to first save the original as `song.gp.bak`:
+
+```powershell
+score_tool metadata set -i song.gp --title "My Song" --backup
+```
+
+An existing backup is never overwritten. `--backup` cannot be combined with `--output`. `--only-if-empty` skips fields whose value
+contains non-whitespace text. It applies separately to each requested field; omit
+the flag to replace existing values. Supply at least one metadata option.
+A skipped edit leaves the input unchanged and creates no output or backup.
+
+Multiple fields can be updated together, including without a title:
+
+```powershell
+score_tool metadata set -i song.gp --subtitle "Live version" --artist "My Artist" --album "My Album" --only-if-empty
+```
+
+To keep the input untouched and write a new file:
+
+```powershell
+score_tool metadata set -i song.gp --title "My Song" --output song.updated.gp
+```
+
+The output must not already exist and must use the same extension as the input.
+Supported extensions are `.gp3`, `.gp4`, `.gp5`, `.gpx`, and `.gp`. Supplied values must be nonempty. Omitted fields remain untouched.
+The command replaces or inserts the requested `Title`, `SubTitle`, `Artist`, or `Album`
+elements within `GPIF/Score` in `Content/score.gpif`, uses Guitar Pro-style CDATA sections, and retains the rest of the XML. Other archive entries (including
+audio, styles, and layout) are copied without re-encoding. The archive container
+is rebuilt; it is not a byte-for-byte copy. Writes use a temporary file beside the
+destination, and in-place edits check whether the input changed before saving.
+
+### Format-specific preservation
+
+For GP3/4/5, the command replaces only the requested length-prefixed metadata
+strings; the header, omitted fields, and every byte after the album remain intact.
+Supported standard headers are v3.00, v4.00, v4.06, v5.00, and v5.10; clipboard and
+other versions are rejected. Values must fit Windows-1252 and the 255-byte limit.
+Unrepresentable characters are rejected rather than replaced or truncated.
+
+For GPX, metadata uses the same GPIF/CDATA editing as GP files. The original BCFS
+filesystem sectors are retained, and the edited GPIF is appended with an updated
+score directory entry. All other entry data remains unchanged. BCFZ input is
+recompressed using literal blocks, so the resulting file may be larger. Repeated
+edits can grow the container because original score sectors are retained. Edits
+that exceed the filesystem block-table capacity are rejected.
+
+```powershell
+score_tool metadata set -i song.gp5 --title "My Song" --only-if-empty
+score_tool metadata set -i song.gpx --artist "My Artist" --output song.updated.gpx
+```
+
+Reopen edited files in Guitar Pro to verify application compatibility. Parser
+roundtrip tests alone do not establish that every Guitar Pro version accepts them.
+
 ## Batch metadata scanning
 
 Build once with `cargo build --release -p cli`, then call the executable from any project:

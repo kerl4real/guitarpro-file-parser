@@ -197,11 +197,11 @@ pub fn read_gp_with_audio(data: &[u8]) -> GpResult<(Gpif, Option<Vec<u8>>)> {
     let mut audio: Option<Vec<u8>> = None;
     if let Ok(mut zip) = ZipArchive::new(Cursor::new(data)) {
         for i in 0..zip.len() {
-            let Ok(mut entry) = zip.by_index(i) else { continue };
+            let Ok(mut entry) = zip.by_index(i) else {
+                continue;
+            };
             let name = entry.name().to_string();
-            if name.starts_with("Content/Assets/")
-                && name.ends_with(".mp3")
-            {
+            if name.starts_with("Content/Assets/") && name.ends_with(".mp3") {
                 let mut buf = Vec::new();
                 if entry.read_to_end(&mut buf).is_ok() {
                     audio = Some(buf);
@@ -220,6 +220,106 @@ pub fn read_gp_with_audio(data: &[u8]) -> GpResult<(Gpif, Option<Vec<u8>>)> {
 
 const BCFZ_MAGIC: &[u8; 4] = b"BCFZ";
 const BCFS_MAGIC: &[u8; 4] = b"BCFS";
+
+/// Edit only the score GPIF in a GPX container. All original filesystem sectors
+/// are retained; the edited score is appended and its directory entry updated.
+/// Compressed input is recompressed using the existing literal BCFZ encoder.
+pub fn patch_gpx_score(
+    input: &[u8],
+    update: impl FnOnce(&str) -> Result<Option<String>, String>,
+) -> Result<Option<Vec<u8>>, String> {
+    let compressed = input.starts_with(BCFZ_MAGIC);
+    let mut filesystem = if compressed {
+        let size = input.get(4..8).ok_or("Truncated BCFZ header")?;
+        let size = i32::from_le_bytes(size.try_into().unwrap());
+        if !(0..=64 * 1024 * 1024).contains(&size) {
+            return Err("Invalid or oversized BCFS filesystem".into());
+        }
+        let result = decompress_bcfz(input)?;
+        if result.len() != size as usize {
+            return Err("Truncated BCFZ filesystem".into());
+        }
+        result
+    } else {
+        input.to_vec()
+    };
+    if !filesystem.starts_with(BCFS_MAGIC)
+        || filesystem.len() < 4 + SECTOR_SIZE * 2
+        || (filesystem.len() - 4) % SECTOR_SIZE != 0
+    {
+        return Err("Invalid BCFS filesystem".into());
+    }
+    let disk = &filesystem[4..];
+    let mut score = None;
+    // Exclude every referenced data sector from directory discovery. Musical or
+    // embedded data may coincidentally begin with the directory entry marker.
+    let mut data_sectors = std::collections::HashSet::new();
+    for sector in 1..disk.len() / SECTOR_SIZE {
+        let offset = sector * SECTOR_SIZE;
+        if data_sectors.contains(&sector) || read_le_i32(disk, offset) != 2 {
+            continue;
+        }
+        let name_bytes = &disk[offset + 4..offset + 131];
+        let name_end = name_bytes.iter().position(|&byte| byte == 0).unwrap_or(127);
+        let name = &name_bytes[..name_end];
+        let size = read_le_i32(disk, offset + 0x8c);
+        if size < 0 || size as usize > 64 * 1024 * 1024 {
+            return Err("Invalid BCFS entry size".into());
+        }
+        let mut bytes = Vec::new();
+        let mut terminated = false;
+        for table in (offset + 0x94..offset + SECTOR_SIZE - 3).step_by(4) {
+            let block = read_le_i32(disk, table);
+            if block == 0 {
+                terminated = true;
+                break;
+            }
+            if block < 1 || block as usize >= disk.len() / SECTOR_SIZE {
+                return Err("Invalid BCFS data block".into());
+            }
+            data_sectors.insert(block as usize);
+            if name == b"score.gpif" {
+                let block_offset = block as usize * SECTOR_SIZE;
+                bytes.extend_from_slice(&disk[block_offset..block_offset + SECTOR_SIZE]);
+            }
+        }
+        if !terminated {
+            return Err("Unterminated BCFS block table".into());
+        }
+        if name == b"score.gpif" {
+            if score.is_some() || bytes.len() < size as usize {
+                return Err("Duplicate or truncated GPIF".into());
+            }
+            bytes.truncate(size as usize);
+            score = Some((offset, bytes));
+        }
+    }
+    let (entry, bytes) = score.ok_or("score.gpif not found")?;
+    let xml = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+    let Some(patched) = update(xml)? else {
+        return Ok(None);
+    };
+    let blocks = patched.len().div_ceil(SECTOR_SIZE);
+    if blocks + 1 > (SECTOR_SIZE - 0x94) / 4 {
+        return Err("Edited GPIF exceeds BCFS block table capacity".into());
+    }
+    let first = (filesystem.len() - 4) / SECTOR_SIZE;
+    let offset = filesystem.len();
+    filesystem.resize(offset + blocks * SECTOR_SIZE, 0);
+    filesystem[offset..offset + patched.len()].copy_from_slice(patched.as_bytes());
+    filesystem[4 + entry + 0x8c..4 + entry + 0x90]
+        .copy_from_slice(&(patched.len() as i32).to_le_bytes());
+    filesystem[4 + entry + 0x94..4 + entry + SECTOR_SIZE].fill(0);
+    for i in 0..blocks {
+        let table = 4 + entry + 0x94 + i * 4;
+        filesystem[table..table + 4].copy_from_slice(&((first + i) as i32).to_le_bytes());
+    }
+    Ok(Some(if compressed {
+        compress_bcfz(&filesystem)
+    } else {
+        filesystem
+    }))
+}
 const SECTOR_SIZE: usize = 0x1000;
 
 /// Bit-level reader for BCFZ decompression.
